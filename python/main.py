@@ -1,152 +1,154 @@
+# encoding:utf-8
 import socket
-import threading
-import select
-
-
-
-SOCKS_VERSION = 5
-
-
-class Proxy:
-    def __init__(self):
-        self.username = "username"
-        self.password = "password"
-
-    def handle_client(self, connection):
-        # greeting header
-        # read and unpack 2 bytes from a client
-        version, nmethods = connection.recv(2)
-
-        # get available methods [0, 1, 2]
-        methods = self.get_available_methods(nmethods, connection)
-
-        # accept only USERNAME/PASSWORD auth
-        if 2 not in set(methods):
-            # close connection
-            connection.close()
-            return
-
-        # send welcome message
-        connection.sendall(bytes([SOCKS_VERSION, 2]))
-
-        if not self.verify_credentials(connection):
-            return
-
-        # request (version=5)
-        version, cmd, _, address_type = connection.recv(4)
-
-        if address_type == 1:  # IPv4
-            address = socket.inet_ntoa(connection.recv(4))
-        elif address_type == 3:  # Domain name
-            domain_length = connection.recv(1)[0]
-            address = connection.recv(domain_length)
-            address = socket.gethostbyname(address)
-
-        # convert bytes to unsigned short array
-        port = int.from_bytes(connection.recv(2), 'big', signed=False)
-
+import _thread
+ 
+ 
+class Header:
+    """
+    用于读取和解析头信息
+    """
+ 
+    def __init__(self, conn):
+        self._method = None
+        header = b''
         try:
-            if cmd == 1:  # CONNECT
-                remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                remote.connect((address, port))
-                bind_address = remote.getsockname()
-                print("* Connected to {} {}".format(address, port))
+            while 1:
+                data = conn.recv(4096)
+                header = b"%s%s" % (header, data)
+                if header.endswith(b'\r\n\r\n') or (not data):
+                    break
+        except:
+            pass
+        self._header = header
+        self.header_list = header.split(b'\r\n')
+        self._host = None
+        self._port = None
+ 
+    def get_method(self):
+        """
+        获取请求方式
+        :return:
+        """
+        if self._method is None:
+            self._method = self._header[:self._header.index(b' ')]
+        return self._method
+ 
+    def get_host_info(self):
+        """
+        获取目标主机的ip和端口
+        :return:
+        """
+        if self._host is None:
+            method = self.get_method()
+            line = self.header_list[0].decode('utf8')
+            if method == b"CONNECT":
+                host = line.split(' ')[1]
+                if ':' in host:
+                    host, port = host.split(':')
+                else:
+                    port = 443
             else:
-                connection.close()
-
-            addr = int.from_bytes(socket.inet_aton(bind_address[0]), 'big', signed=False)
-            port = bind_address[1]
-
-            reply = b''.join([
-                SOCKS_VERSION.to_bytes(1, 'big'),
-                int(0).to_bytes(1, 'big'),
-                int(0).to_bytes(1, 'big'),
-                int(1).to_bytes(1, 'big'),
-                addr.to_bytes(4, 'big'),
-                port.to_bytes(2, 'big')
-            ])
-        except Exception as e:
-            # return connection refused error
-            reply = self.generate_failed_reply(address_type, 5)
-
-        connection.sendall(reply)
-
-        # establish data exchange
-        if reply[1] == 0 and cmd == 1:
-            self.exchange_loop(connection, remote)
-
-        connection.close()
-
-    
-    def exchange_loop(self, client, remote):
-        while True:
-            # wait until client or remote is available for read
-            r, w, e = select.select([client, remote], [], [])
-
-            if client in r:
-                data = client.recv(4096)
-                if remote.send(data) <= 0:
-                    break
-
-            if remote in r:
-                data = remote.recv(4096)
-                if client.send(data) <= 0:
-                    break
-
-    
-    def generate_failed_reply(self, address_type, error_number):
-        return b''.join([
-            SOCKS_VERSION.to_bytes(1, 'big'),
-            error_number.to_bytes(1, 'big'),
-            int(0).to_bytes(1, 'big'),
-            address_type.to_bytes(1, 'big'),
-            int(0).to_bytes(4, 'big'),
-            int(0).to_bytes(4, 'big')
-        ])
-
-
-    def verify_credentials(self, connection):
-        version = ord(connection.recv(1)) # should be 1
-
-        username_len = ord(connection.recv(1))
-        username = connection.recv(username_len).decode('utf-8')
-
-        password_len = ord(connection.recv(1))
-        password = connection.recv(password_len).decode('utf-8')
-
-        if username == self.username and password == self.password:
-            # success, status = 0
-            response = bytes([version, 0])
-            connection.sendall(response)
+                for i in self.header_list:
+                    if i.startswith(b"Host:"):
+                        host = i.split(b" ")
+                        if len(host) < 2:
+                            continue
+                        host = host[1].decode('utf8')
+                        break
+                else:
+                    host = line.split('/')[2]
+                if ':' in host:
+                    host, port = host.split(':')
+                else:
+                    port = 80
+            self._host = host
+            self._port = int(port)
+        return self._host, self._port
+ 
+    @property
+    def data(self):
+        """
+        返回头部数据
+        :return:
+        """
+        return self._header
+ 
+    def is_ssl(self):
+        """
+        判断是否为 https协议
+        :return:
+        """
+        if self.get_method() == b'CONNECT':
             return True
-
-        # failure, status != 0
-        response = bytes([version, 0xFF])
-        connection.sendall(response)
-        connection.close()
         return False
-
-
-    def get_available_methods(self, nmethods, connection):
-        methods = []
-        for i in range(nmethods):
-            methods.append(ord(connection.recv(1)))
-        return methods
-
-    def run(self, host, port):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind((host, port))
-        s.listen()
-
-        print("* Socks5 proxy server is running on {}:{}".format(host, port))
-
-        while True:
-            conn, addr = s.accept()
-            print("* new connection from {}".format(addr))
-            t = threading.Thread(target=self.handle_client, args=(conn,))
-            t.start()
-
-
-if __name__ == "__main__":
-    proxy = Proxy()
-    proxy.run("127.0.0.1", 3000)
+ 
+    def __repr__(self):
+        return str(self._header.decode("utf8"))
+ 
+def communicate(sock_in, sock_out):
+    """
+    socket之间的数据交换
+    :param sock_in:
+    :param sock_out:
+    :return:
+    """
+    try:
+        while 1:
+            data = sock_in.recv(1024)
+            if not data:
+                return
+            sock_out.sendall(data)
+    except:
+        pass
+ 
+ 
+def handle(client):
+    """
+    处理连接进来的客户端
+    :param client:
+    :return:
+    """
+    timeout = 60
+    client.settimeout(timeout)
+    header = Header(client)
+    if not header.data:
+        client.close()
+        return
+    print(*header.get_host_info(), header.get_method())
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        server.connect(header.get_host_info())
+        server.settimeout(timeout)
+        if header.is_ssl():
+            data = b"HTTP/1.0 200 Connection Established\r\n\r\n"
+            client.sendall(data)
+            _thread.start_new_thread(communicate, (client, server))
+        else:
+            server.sendall(header.data)
+        communicate(sock_in=server, sock_out=client)
+    except:
+        server.close()
+        client.close()
+ 
+ 
+def serve(ip, port):
+    """
+    代理服务
+    :param ip:
+    :param port:
+    :return:
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((ip, port))
+    s.listen(10)
+    print(f'http proxy server running on {ip}:{port}')
+    while True:
+        conn, addr = s.accept()
+        _thread.start_new_thread(handle, (conn,))
+ 
+ 
+if __name__ == '__main__':
+    IP = "127.0.0.1"
+    PORT = 3000
+    serve(IP, PORT)
