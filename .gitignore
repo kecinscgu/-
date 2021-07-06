@@ -1,3 +1,2 @@
-./.vscode
-./c++/test.cpp
-./c++/test.exe
+.vscode
+main.exe
