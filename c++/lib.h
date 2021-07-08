@@ -12,10 +12,21 @@
 #include <thread>
 #include <vector>
 
-void communicate(int proxyOut, int proxyIn);    // TODO
+
+// Maintain the dataflow from socketIn to socketOut
+// TODO
+void communicate(int socketOut, int socketIn);
+
+// Initialize the listening socket for the proxy servers
 int setupProxy(const std::string *p_ip, int port);
+
+// Accept the connection from the client socket
 int acceptClient(int proxySocket);
+
+// Determine whether the first vector agrees with the second char at its ending positions
 bool endsWith(std::vector<char> const& fullString, std::vector<char> const& ending);
+
+// Handle the connection from some client socket
 void handleConn(int clientSocket);
 
 class Connection
@@ -24,13 +35,14 @@ public:
     int _clientSocket;
     std::vector<char> *_pHeader;
     std::vector<std::string> *_pHeaderList;
-    std::vector<char> _hostIp;
-    std::vector<char> _hostPort;
+    std::string _method;
+    char *_pHostName;
+    char *_pHostPort;
     
     Connection(int clientSocket);
-    char *getHostIp();  // TODO
-    int getHostPort();  // TODO
-    bool isSSL();       // TODO
+    ~Connection();
+    bool isHTTPS();       // TODO
+    int connectHost(int proxySocket);
 };
 
 #endif

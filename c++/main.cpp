@@ -12,7 +12,7 @@ int main()
     while (true)
     {
         int clientSocket = acceptClient(proxySocket);
-        std::thread conn(handleConn, clientSocket);
+        std::thread conn(handleConn, clientSocket, proxySocket);
     }
 
     return 0;
